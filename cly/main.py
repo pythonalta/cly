@@ -86,7 +86,7 @@ class CLI:
 
         return decorator
 
-    def parse_and_execute(self, args=None):
+    def exec(self, args=None):
         if sys.version_info >= (3, 7):
             if self._subparsers:
                 self._subparsers.required = True
