@@ -8,6 +8,11 @@ class CLI:
         self._parser = argparse.ArgumentParser(prog=name, description=desc)
         self._commands = {}
         self._options = {}
+        self._parser.add_argument(
+            "--completion",
+            action="store_true",
+            help="Print bash completion script for the CLI."
+        )
 
     def _add_arguments_from_signature(self, parser, func):
         sig = inspect.signature(func)
@@ -159,5 +164,91 @@ class CLI:
                 sys.exit(1)
         else:
             self._parser.print_help()
+
+    def _generate_bash_completion(self):
+        script = f"""
+_{self._parser.prog}_completion() {{
+    local cur prev commands subcommands
+    COMPREPLY=()
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+    commands="{ " ".join([c for c in self._commands if isinstance(c, str)]) }" # Main commands
+    local command_index=-1
+    for i in "${{!COMP_WORDS[@]}}"; do
+        if [[ $i -gt 0 ]]; then
+            local word="${{COMP_WORDS[i]}}"
+            if [[ ${{commands}} =~ (^| )"${{word}}"( |$) ]]; then
+                command_index=$i
+                break
+            fi
+        fi
+    done
+    if [[ $command_index -eq -1 ]]; then
+        COMPREPLY=( $(compgen -W "${{commands}} --completion" -- ${{cur}}) )
+        return 0
+    else
+        local current_cmd="${{COMP_WORDS[command_index]}}"
+        local current_path="${{current_cmd}}"
+        local current_commands_dict="${{commands}}"
+
+        local processing_subcommands=true
+        local parent_parser_dest="command"
+
+        for ((i=command_index+1; i<COMP_CWORD; i++)); do
+            local word="${{COMP_WORDS[i]}}"
+            local found_subcommand=false
+
+            if [[ ${{processing_subcommands}} == true ]]; then
+                case "${{current_path}}" in
+                    cmd1)
+                        subcommands="subcmd1 subcmd_other"
+                        ;;
+                    *)
+                        subcommands=""
+                        ;;
+                esac
+
+                if [[ ${{subcommands}} =~ (^| )"${{word}}"( |$) ]]; then
+                    current_path="${{current_path}} ${{word}}"
+                else
+                    processing_subcommands=false
+                fi
+            fi
+        done
+        if [[ ${{processing_subcommands}} == true ]]; then
+            case "${{current_path}}" in
+                cmd1)
+                    subcommands="subcmd1 subcmd_other"
+                    ;;
+                cmd1\ subcmd1)
+                     subcommands="subsubcmd1"
+                     ;;
+                *)
+                    subcommands=""
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${{subcommands}}" -- ${{cur}}) )
+        else
+            local options="$(printf '%s\\n' "${{_parser.format_help().splitlines()[@]}}" | grep -oP '^  -\w(, --[\w-]+)?' | sed 's/,//g' | awk '{{print $1, $2}}' | xargs echo )"
+
+            local used_options=""
+            for word in "${{COMP_WORDS[@]}}"; do
+                if [[ ${{word}} =~ ^- ]]; then
+                    used_options+=" ${{word}}"
+                fi
+            done
+            local available_options=""
+            for opt in ${{options}}; do
+                if [[ ! ${{used_options}} =~ (^| )${{opt}}( |$) ]]; then
+                    available_options+="${{opt}} "
+                fi
+            done
+            COMPREPLY=( $(compgen -W "${{available_options}}" -- ${{cur}}) )
+        fi
+    fi
+}}
+complete -F _{self._parser.prog}_completion {self._parser.prog}
+"""
+        return script
 
 
