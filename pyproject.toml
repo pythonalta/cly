@@ -1,5 +1,5 @@
 [project]
-name = "cli"
+name = "cly"
 version = "0.0.0"
 description = "A lighweight and intuitive interface for  argparse to create CLIs"
 readme = "README.md"
@@ -15,5 +15,5 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cli*"]
+include = ["cly*"]
 
