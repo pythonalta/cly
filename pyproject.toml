@@ -1,7 +1,7 @@
 [project]
 name = "cly"
 version = "0.0.0"
-description = "A lighweight and intuitive interface for  argparse to create CLIs"
+description = "A lighweight and intuitive to create Python CLIs"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "BSD"}
