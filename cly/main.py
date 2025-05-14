@@ -92,109 +92,107 @@ class CLI:
                 print(f"  {cmd}: subcommands: {', '.join(self._sub_cmds[cmd].keys())}")
 
     def print_completion(self):
-        commands = list(self._parent_cmds.keys())
-        subcmds = self._sub_cmds
-        prog = self._prog
-        completions = self._completions
+        real_roots = set(self._parent_cmds.keys())
+        cmds = sorted(real_roots)
+        subcmds_map = {parent: sorted([sub for sub in subs if sub]) for parent, subs in self._sub_cmds.items()}
 
-        subcompletions = []
-        for cmd in commands:
-            if subcmds.get(cmd):
-                for sc in subcmds[cmd]:
-                    subcompletions.append(f"{cmd}:{sc}")
+        opt_map = {}
+        val_map = {}
+        for cmdpath, comp in self._completions.items():
+            label = "_".join(cmdpath)
+            opt_map.setdefault(label, [])
+            val_map.setdefault(label, {})
+            for arg, vals in comp.items():
+                if f"--{arg}" not in opt_map[label]:
+                    opt_map[label].append(f"--{arg}")
+                val_map[label][arg] = vals
 
-        argcomp_lines = []
-        for cmdpath, compdict in completions.items():
-            cmdlabel = '_'.join(cmdpath)
-            for arg, choices in compdict.items():
-                arrname = f"_COMP_{cmdlabel}_{arg}"
-                quoted = " ".join(f'"{c}"' for c in choices)
-                argcomp_lines.append(f'{arrname}=({quoted})')
+        arrays = []
+        for label, argvals in val_map.items():
+            for arg, vals in argvals.items():
+                basharr = f"_COMP_{label}__{arg}"
+                valstr = " ".join([f'"{v}"' for v in vals])
+                arrays.append(f'{basharr}=({valstr})')
 
         script = [
             "#!/bin/bash",
-            "# Portable completion for your CLI",
-            *argcomp_lines,
+            *arrays,
             "",
-            f'_{prog}_completion() {{',
-            '    local cur prev cmd subcmd',
+            f'_{self._prog}_completion() {{',
+            '    local cur prev words cword',
             '    COMPREPLY=()',
             '    cur="${COMP_WORDS[COMP_CWORD]}"',
             '    prev="${COMP_WORDS[COMP_CWORD-1]}"',
-            '    cmd="${COMP_WORDS[1]}"',
-            '    subcmd=""',
+            '    words=("${COMP_WORDS[@]}")',
+            '    cword=$COMP_CWORD',
             '',
-            '    # Top-level commands',
-            f'    local cmds="{ " ".join(commands) }"',
-            f'    local subcmds="{ " ".join(subcompletions) }"',
+            f'    cmds="{ " ".join(cmds) }"',
             '',
-            '    if [[ $COMP_CWORD -eq 1 ]]; then',
+            '    declare -A subcmds',
+        ]
+        for parent, subs in subcmds_map.items():
+            script.append(f'    subcmds["{parent}"]="{ " ".join(subs) }"')
+        script.append('    declare -A opts')
+        for label, optlist in opt_map.items():
+            script.append(f'    opts["{label}"]="{ " ".join(optlist) }"')
+
+        script.extend([
+            '    if [[ $cword -eq 1 ]]; then',
             '        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )',
             '        return 0',
             '    fi',
             '',
-            '    # Subcommand completion',
-            '    if [[ $COMP_CWORD -eq 2 ]]; then',
-            '        local subs=""',
-            '        for sc in $subcmds; do',
-            '            local p="${sc%%:*}"',
-            '            local s="${sc##*:}"',
-            '            if [[ "$p" == "$cmd" ]]; then',
-            '                subs="$subs $s"',
-            '            fi',
-            '        done',
-            '        if [[ -n $subs ]]; then',
-            '            COMPREPLY=( $(compgen -W "$subs" -- "$cur") )',
+            '    local command1="${words[1]}"',
+            '    local subcmd=""',
+            '    local label="$command1"',
+            '',
+            '    if [[ $cword -ge 3 ]]; then',
+            '        if [[ -n "${subcmds[$command1]}" ]]; then',
+            '            for candidate in ${subcmds[$command1]}; do',
+            '                if [[ "$candidate" == "${words[2]}" ]]; then',
+            '                    subcmd="$candidate"',
+            '                    label="${command1}_$candidate"',
+            '                    break',
+            '                fi',
+            '            done',
+            '        fi',
+            '    fi',
+            '',
+            '    if [[ $cword -eq 2 ]]; then',
+            '        if [[ -n "${subcmds[$command1]}" ]]; then',
+            '            COMPREPLY+=( $(compgen -W "${subcmds[$command1]}" -- "$cur") )',
+            '        fi',
+            '        if [[ -n "${opts[$command1]}" ]]; then',
+            '            COMPREPLY+=( $(compgen -W "${opts[$command1]}" -- "$cur") )',
+            '        fi',
+            '        return 0',
+            '    fi',
+            '',
+            '    if [[ $subcmd != "" && $cword -eq 3 ]]; then',
+            '        if [[ -n "${opts[$label]}" ]]; then',
+            '            COMPREPLY=( $(compgen -W "${opts[$label]}" -- "$cur") )',
             '            return 0',
             '        fi',
             '    fi',
             '',
-            '    # Detect subcmd if present',
-            '    if [[ $COMP_CWORD -ge 3 ]]; then',
-            '        local maybe_sc="${COMP_WORDS[2]}"',
-            '        for sc in $subcmds; do',
-            '            local p="${sc%%:*}"',
-            '            local s="${sc##*:}"',
-            '            if [[ "$p" == "$cmd" && "$s" == "$maybe_sc" ]]; then',
-            '                subcmd="$s"',
-            '                break',
-            '            fi',
-            '        done',
+            '    if [[ "$prev" == --* ]]; then',
+            '        argname="${prev#--}"',
+            '        arrvar="_COMP_${label//[^a-zA-Z0-9_]/_}__${argname}"',
+            '        if declare -p $arrvar &>/dev/null; then',
+            r'            COMPREPLY=( $(compgen -W "$(eval "echo \${${arrvar}[@]}")" -- "$cur") )',
+            '            return 0',
+            '        fi',
+            '    elif [[ "$cur" == --*=* ]]; then',
+            '        argname="${cur%%=*}"',
+            '        argname="${argname#--}"',
+            '        arrvar="_COMP_${label//[^a-zA-Z0-9_]/_}__${argname}"',
+            '        if declare -p $arrvar &>/dev/null; then',
+            r'            COMPREPLY=( $(compgen -W "$(eval "echo \${${arrvar}[@]}")" -- "") )',
+            '            return 0',
+            '        fi',
             '    fi',
-            "",
-            "    # Per-argument custom completions",
-            '    local clabel="$cmd"',
-            '    if [[ -n "$subcmd" ]]; then',
-            '        clabel="${clabel}_$subcmd"',
-            '    fi',
-            "",
-            "    case $clabel in"
-        ]
-        for cmdpath, compdict in completions.items():
-            clabel = '_'.join(cmdpath)
-            script.append(f"        {clabel})")
-            for arg, choices in compdict.items():
-                arr_name = f"_COMP_{clabel}_{arg}"
-                script += [
-                    f'            if [[ "$prev" == "--{arg}" || "$cur" == "{arg}="* ]]; then',
-                    f'                COMPREPLY=( $(compgen -W "${{{arr_name}[@]}}" -- "$cur") )',
-                    f'                return 0',
-                    f'            fi',
-                    f'            # positional argument completion:',
-                    f'            for ((i=1; i<$COMP_CWORD; i++)); do',
-                    f'                if [[ "${{COMP_WORDS[i]}}" == "{cmdpath[-1]}" ]]; then',
-                    f'                    local nexti=$((i+1))',
-                    f'                    if [[ $COMP_CWORD -eq $nexti ]]; then',
-                    f'                        COMPREPLY=( $(compgen -W "${{{arr_name}[@]}}" -- "$cur") )',
-                    f'                        return 0',
-                    f'                    fi',
-                    f'                fi',
-                    f'            done'
-                ]
-            script.append("            ;;")
-        script += [
-            "    esac",
-            "}",
-            f'complete -F _{prog}_completion {prog}'
-        ]
+            '    return 0',
+            '}',
+            f'complete -F _{self._prog}_completion {self._prog}'
+        ])
         print('\n'.join(script))
