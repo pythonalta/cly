@@ -2,20 +2,18 @@ import argparse
 import inspect
 import sys
 import os
+import json
 
 class CLI:
     def __init__(self, name="cli", desc=""):
         self._parser = argparse.ArgumentParser(prog=name, description=desc)
-        self._commands = {}
+        self._commands = {} # Stores a nested structure representing command hierarchy
         self._options = {}
-        self._command_subparsers = None
-
         self._parser.add_argument(
             "--completion",
             action="store_true",
             help="Print bash completion script for the CLI."
         )
-
 
     def _add_arguments_from_signature(self, parser, func):
         sig = inspect.signature(func)
@@ -26,56 +24,105 @@ class CLI:
                 if param.default is inspect.Parameter.empty:
                     parser.add_argument(name, help=help_text)
                 else:
-                    parser.add_argument(f"--{name}", help=help_text, default=param.default)
+                    parser.add_argument(f"--{name}", help=help_text, default=param.default, required=False)
 
             elif param.kind == inspect.Parameter.KEYWORD_ONLY:
                 if param.default is inspect.Parameter.empty:
                     parser.add_argument(f"--{name}", required=True, help=help_text)
                 else:
-                    parser.add_argument(f"--{name}", default=param.default, help=help_text)
+                    parser.add_argument(f"--{name}", default=param.default, help=help_text, required=False)
             elif param.kind == inspect.Parameter.VAR_POSITIONAL:
                 parser.add_argument(name, nargs='*', help=f"Variable positional arguments for '{name}'")
             elif param.kind == inspect.Parameter.VAR_KEYWORD:
                 raise TypeError(f"**kwargs parameter ('{name}') is not supported in CLI arguments.")
 
-    def cmd(self, name, help=None):
+    def cmd(self, path, help=None):
         def decorator(func):
-            if name in self._commands:
-                raise ValueError(f"Command '{name}' already registered.")
+            command_parts = path.strip("/").split("/")
 
-            if not hasattr(self, '_command_subparsers') or self._command_subparsers is None:
-                self._command_subparsers = self._parser.add_subparsers(title="Available commands", dest="command", help="Available commands")
+            current_commands_level = self._commands
+            current_parser = self._parser
+            full_command_path = []
 
-            cmd_parser = self._command_subparsers.add_parser(name, help=help or func.__doc__)
+            for i, part in enumerate(command_parts):
+                full_command_path.append(part)
+                if len(full_command_path) > 1: # This is a subcommand
+                    parent_path = tuple(full_command_path[:-1])
+                    if parent_path not in self._commands:
+                        raise ValueError(f"Parent command '{'/'.join(parent_path)}' not registered yet.")
 
-            try:
-                self._add_arguments_from_signature(cmd_parser, func)
-            except TypeError as e:
-                raise TypeError(f"Error adding arguments for command '{name}': {e}")
+                    if not isinstance(current_commands_level.get(part), dict):
+                        if current_commands_level.get(part) is not None and not isinstance(current_commands_level.get(part), dict):
+                            raise ValueError(f"'{part}' already exists but is not a subcommand parent.")
 
-            self._commands[name] = {
-                "func": func,
-                "parser": cmd_parser,
-                "subcommands_parser": None
-            }
-            cmd_parser.set_defaults(func=func, command_name=name, is_subcommand=False)
+                        parent_info = self._commands[parent_path]
+                        if parent_info.get("subparsers") is None:
+                            parent_info["subparsers"] = parent_info["parser"].add_subparsers(
+                                title=f"Available subcommands for '{'/'.join(parent_path)}'",
+                                dest="_".join(parent_path) + "_subcommand",
+                                help=f"Available subcommands under '{'/'.join(parent_path)}'"
+                            )
+
+                            for default_key in ['func', 'is_subcommand', 'command_path']:
+                                if default_key in parent_info["parser"]._defaults:
+                                    del parent_info["parser"]._defaults[default_key]
+
+                        cmd_parser = parent_info["subparsers"].add_parser(part, help=help or func.__doc__)
+                        current_commands_level[part] = {"parser": cmd_parser}
+                        current_commands_level = current_commands_level[part]
+                        current_parser = self._commands[tuple(full_command_path)]["parser"]
+                    else:
+                        current_commands_level = current_commands_level[part]
+                        current_parser = current_commands_level.get("parser")
+  
+                else: # Top-level command
+                    if part in self._commands:
+                        raise ValueError(f"Command '{part}' already registered.")
+
+                    if not hasattr(self, '_command_subparsers') or self._command_subparsers is None:
+                        self._command_subparsers = self._parser.add_subparsers(title="Available commands", dest="command", help="Available commands")
+
+                    cmd_parser = self._command_subparsers.add_parser(part, help=help or func.__doc__)
+                    current_commands_level[part] = {"parser": cmd_parser}
+                    current_commands_level = current_commands_level[part]
+                    current_parser = cmd_parser
+
+                if tuple(full_command_path) in self._commands and self._commands[tuple(full_command_path)].get("func") is not None:
+                    raise ValueError(f"Command '{'/'.join(full_command_path)}' is already a callable command.")
+
+                if i == len(command_parts) - 1:
+                    try:
+                        self._add_arguments_from_signature(current_parser, func)
+                    except TypeError as e:
+                        raise TypeError(f"Error adding arguments for command '{path}': {e}") from e
+
+                    self._commands[tuple(full_command_path)] = {"func": func, "parser": current_parser} # Store the func against the full path tuple
+                    current_parser.set_defaults(func=func, command_path=full_command_path, is_subcommand=(len(full_command_path) > 1))
+                    self._completion_commands[' '.join(full_command_path)] = {}
+
+
+                else:
+                    if isinstance(self._commands.get(tuple(full_command_path)), dict) and self._commands[tuple(full_command_path)].get("func"):
+                        raise ValueError(f"Cannot add subcommand '{part}' to command '{'/'.join(full_command_path[:-1])}' because it's already a terminal command.")
+        
+
+                if i < len(command_parts) - 1:
+                    if tuple(full_command_path) not in self._commands:
+                        self._commands[tuple(full_command_path)] = {"parser": current_parser}
+                    current_commands_level = self._commands[tuple(full_command_path)]
+
+
             return func
         return decorator
 
-    def opt(self, short=None, long=None, help=None):
+    def opt(self, *names, help=None):
         def decorator(func):
-            option_names = []
-            if short:
-                option_names.append(short)
-                if short in self._options:
-                    raise ValueError(f"Option '{short}' already registered.")
-            if long:
-                option_names.append(long)
-                if long in self._options:
-                    raise ValueError(f"Option '{long}' already registered.")
+            if not names:
+                raise ValueError("At least one option name must be provided.")
 
-            if not option_names:
-                raise ValueError("At least 'short' or 'long' must be provided for an option.")
+            for name in names:
+                if name in self._options:
+                    raise ValueError(f"Option '{name}' already registered.")
 
             sig = inspect.signature(func)
             nargs = None
@@ -96,7 +143,7 @@ class CLI:
 
             if len(sig.parameters) == 0:
                 nargs = 0
-                action = 'store_true' if all(not opt.startswith('-') for opt in option_names) else 'store_const'
+                action = 'store_true' if all(not opt.startswith('-') for opt in names) else 'store_const'
                 const = True
             elif nargs is None:
                 nargs = 1
@@ -104,17 +151,17 @@ class CLI:
             else:
                 action = 'store'
 
-            dest_name = option_names[0].lstrip('-').replace('-', '_')
+            dest_name = names[0].lstrip('-').replace('-', '_')
 
             self._parser.add_argument(
-                *option_names,
+                *names,
                 help=help or func.__doc__,
                 nargs=nargs,
                 action=action,
                 dest=dest_name,
             )
 
-            self._options[tuple(option_names)] = {
+            self._options[names] = {
                 "func": func,
                 "arg_names": option_arg_names,
                 "dest": dest_name
@@ -122,209 +169,96 @@ class CLI:
             return func
         return decorator
 
-
-    def subcmd(self, name, cmd_path, help=None):
-        def decorator(func):
-            cmd_path_list = cmd_path.split()
-            current_commands_dict = self._commands
-            parent_parser = self._parser
-
-            for i, current_cmd_name in enumerate(cmd_path_list):
-                if current_cmd_name not in current_commands_dict:
-                    raise ValueError(f"Parent command/subcommand '{' '.join(cmd_path_list[:i+1])}' not registered yet.")
-
-                cmd_info = current_commands_dict[current_cmd_name]
-                parent_parser = cmd_info["parser"]
-
-                if i < len(cmd_path_list) - 1:
-                    if cmd_info.get("subcommands_parser") is None:
-                        cmd_info["subcommands_parser"] = parent_parser.add_subparsers(
-                            title=f"Commands for '{' '.join(cmd_path_list[:i+2])}'",
-                            dest="_".join(cmd_path_list[:i+2]) + "_subcommand",
-                            help=f"Specific commands under '{' '.join(cmd_path_list[:i+1])}'"
-                        )
-                        for default_key in ['func', 'command_name', 'subcommand_name', 'is_subcommand']:
-                            if default_key in parent_parser._defaults:
-                                del parent_parser._defaults[default_key]
-
-                    current_commands_dict = current_commands_dict[(current_cmd_name,)]
-
-            parent_command_name = cmd_path_list[-1]
-            parent_info = current_commands_dict[parent_command_name]
-
-            if parent_info.get("subcommands_parser") is None:
-                parent_info["subcommands_parser"] = parent_info["parser"].add_subparsers(
-                    title=f"Commands for '{cmd_path}'",
-                    dest="_".join(cmd_path_list) + "_subcommand",
-                    help=f"Specific commands under '{cmd_path}'"
-                )
-                for default_key in ['func', 'command_name', 'subcommand_name', 'is_subcommand']:
-                    if default_key in parent_info["parser"]._defaults:
-                        del parent_info["parser"]._defaults[default_key]
-
-            subparser = parent_info["subcommands_parser"].add_parser(name, help=help or func.__doc__)
-
-            try:
-                self._add_arguments_from_signature(subparser, func)
-            except TypeError as e:
-                raise TypeError(f"Error adding arguments for subcommand '{name}' under '{cmd_path}': {e}") from e
-
-            subcommand_key = tuple(cmd_path_list + [name])
-            self._commands[subcommand_key] = {"func": func, "parser": subparser}
-            subparser.set_defaults(func=func, command_path=cmd_path_list, subcommand_name=name, is_subcommand=True)
-            return func
-
-        return decorator
-
-
-    def _generate_bash_completion(self):
-        script = f"""
-_{self._parser.prog}_completion() {{
-    local cur prev commands subcommands
-    COMPREPLY=()
-    cur="${{COMP_WORDS[COMP_CWORD]}}"
-    prev="${{COMP_WORDS[COMP_CWORD-1]}}"
-
-    commands="{ " ".join([c for c in self._commands if isinstance(c, str)]) }"
-
-    local command_index=-1
-    for i in "${{!COMP_WORDS[@]}}"; do
-        if [[ $i -gt 0 ]]; then
-            local word="${{COMP_WORDS[i]}}"
-            if [[ ${{commands}} =~ (^| )"${{word}}"( |$) ]]; then
-                command_index=$i
-                break
-            fi
-        fi
-    done
-
-    if [[ $command_index -eq -1 ]]; then
-        COMPREPLY=( $(compgen -W "${{commands}} --completion" -- ${{cur}}) )
-        return 0
-    else
-        local current_cmd="${{COMP_WORDS[command_index]}}"
-        local current_path="${{current_cmd}}"
-        local current_commands_dict="${{commands}}"
-
-        local processing_subcommands=true
-        local parent_parser_dest="command"
-
-        for ((i=command_index+1; i<COMP_CWORD; i++)); do
-            local word="${{COMP_WORDS[i]}}"
-            local found_subcommand=false
-
-            if [[ ${{processing_subcommands}} == true ]]; then
-                 case "${{current_path}}" in
-                    cmd1)
-                        subcommands="subcmd1 subcmd_other"
-                        ;;
-                    *)
-                        subcommands=""
-                        ;;
-                 esac
-
-                if [[ ${{subcommands}} =~ (^| )"${{word}}"( |$) ]]; then
-                     current_path="${{current_path}} ${{word}}"
-                else
-                     processing_subcommands=false
-                fi
-            fi
-        done
-
-        if [[ ${{processing_subcommands}} == true ]]; then
-             case "${{current_path}}" in
-                cmd1)
-                    subcommands="subcmd1 subcmd_other"
-                    ;;
-                 cmd1\\ subcmd1)
-                     subcommands="subsubcmd1"
-                     ;;
-                *)
-                    subcommands=""
-                    ;;
-             esac
-             COMPREPLY=( $(compgen -W "${{subcommands}}" -- ${{cur}}) )
-        else
-              local options="$(printf '%s\\n' "${{_parser.format_help().splitlines()[@]}}" | grep -oP '^  -\\w(, --[\\w-]+)?' | sed 's/,//g' | awk '{{print $1, $2}}' | xargs echo )"
-
-              local used_options=""
-              for word in "${{COMP_WORDS[@]}}"; do
-                  if [[ ${{word}} =~ ^- ]]; then
-                      used_options+=" ${{word}}"
-                  fi
-              done
-              local available_options=""
-              for opt in ${{options}}; do
-                  if [[ ! ${{used_options}} =~ (^| )${{opt}}( |$) ]]; then
-                      available_options+="${{opt}} "
-                  fi
-              done
-
-             COMPREPLY=( $(compgen -W "${{available_options}}" -- ${{cur}}) )
-
-        fi
-    fi
-
-
-}}
-complete -F _{self._parser.prog}_completion {self._parser.prog}
-"""
-        return script
-
-
     def exec(self, args=None):
-        parsed_args, remaining_args = self._parser.parse_known_args(args)
+        parsed_args, unknown = self._parser.parse_known_args(args)
 
         if hasattr(parsed_args, 'completion') and parsed_args.completion:
-            print(self._generate_bash_completion())
+            bash_completion_script = self._generate_bash_completion()
+            print(bash_completion_script)
             sys.exit(0)
 
-        if sys.version_info >= (3, 7):
-            if hasattr(self, '_command_subparsers') and self._command_subparsers:
-                self._command_subparsers.required = True
-            for key, cmd_info in self._commands.items():
-                if isinstance(cmd_info, dict) and cmd_info.get("subcommands_parser"):
-                    cmd_info["subcommands_parser"].required = True
 
+        try:
+            parsed_args = self._parser.parse_args(args)
+        except SystemExit as e:
+            sys.exit(e.code)
 
-        parsed_args = self._parser.parse_args(args)
 
         if hasattr(parsed_args, 'func'):
             target_func = parsed_args.func
             target_sig = inspect.signature(target_func)
             call_args = []
             call_kwargs = {}
-            remaining_args = []
 
             for name, param in target_sig.parameters.items():
                 if hasattr(parsed_args, name):
-                    value = getattr(parsed_args, name)
+                    call_kwargs[name] = getattr(parsed_args, name)
+                elif param.default is not inspect.Parameter.empty:
+                    call_kwargs[name] = param.default
+                elif param.kind == inspect.Parameter.VAR_POSITIONAL:
+                    call_args.extend(unknown) # Pass unknown arguments as positional args
+                elif param.kind == inspect.Parameter.VAR_KEYWORD:
+                    pass
+                else:
+                     # Handle missing required positional/keyword arguments
+                    if param.default is inspect.Parameter.empty:
+                        print(f"Error: missing required argument '{name}' for command.", file=sys.stderr)
+                        self._parser.print_help(sys.stderr)
+                        sys.exit(1)
 
-                    if param.kind == inspect.Parameter.VAR_POSITIONAL:
-                         if isinstance(value, (list, tuple)):
-                             call_args.extend(value)
-                         elif value is not None:
-                             call_args.append(value)
-                    elif param.kind == inspect.Parameter.VAR_KEYWORD:
-                        pass
-                    else:
-                        call_kwargs[name] = value
+
+            # Handle options
+            for option_names, option_info in self._options.items():
+                dest_name = option_info["dest"]
+                if hasattr(parsed_args, dest_name) and getattr(parsed_args, dest_name) is not None:
+                    option_func = option_info["func"]
+                    option_sig = inspect.signature(option_func)
+                    option_call_args = []
+                    option_call_kwargs = {}
+
+                    option_value = getattr(parsed_args, dest_name)
+
+                    for i, arg_name in enumerate(option_info["arg_names"]):
+                        if option_func.__kwdefaults__ and arg_name in option_func.__kwdefaults__:
+                            option_call_kwargs[arg_name] = option_func.__kwdefaults__[arg_name]
+                        elif i < len(unknown):
+                            option_call_args.append(unknown[i])
+                        elif option_sig.parameters[arg_name].default is not inspect.Parameter.empty:
+                            option_call_kwargs[arg_name] = option_sig.parameters[arg_name].default
+                        else:
+                            print(f"Error: missing argument '{arg_name}' for option {'/'.join(option_names)}", file=sys.stderr)
+                            sys.exit(1)
+
+                    try:
+                        option_func(*option_call_args, **option_call_kwargs)
+                    except TypeError as e:
+                        print(f"Error calling option function for '{'/'.join(option_names)}': {e}", file=sys.stderr)
+                        sys.exit(1)
+                    # Remove used arguments from unknown
+                    unknown = unknown[len(option_call_args):]
+
 
             try:
                 target_func(*call_args, **call_kwargs)
 
+                if unknown:
+                    print(f"Warning: Unrecognized arguments: {unknown}", file=sys.stderr)
+
             except TypeError as e:
                 print(f"Error calling function '{target_func.__name__}': {e}", file=sys.stderr)
-                expected_params = list(target_sig.parameters.keys())
-                print(f"Expected parameters: {expected_params}", file=sys.stderr)
-                print(f"Provided keyword arguments: {call_kwargs}", file=sys.stderr)
-                print(f"Provided positional arguments: {call_args}", file=sys.stderr)
-                print("Parsed arguments namespace:", vars(parsed_args), file=sys.stderr)
+                target_parser = parsed_args.parser if hasattr(parsed_args, 'parser') else self._parser
+                target_parser.print_help(sys.stderr)
                 sys.exit(1)
             except Exception as e:
                 print("An error occurred during function execution:", e, file=sys.stderr)
                 sys.exit(1)
 
         else:
-            self._parser.print_help()
+            if hasattr(parsed_args, 'command_path'):
+                command_path_str = ' '.join(parsed_args.command_path)
+                print(f"Error: Incomplete command. Please specify a subcommand for '{command_path_str}'.", file=sys.stderr)
+                target_parser = parsed_args.parser if hasattr(parsed_args, 'parser') else self._parser
+                target_parser.print_help(sys.stderr)
+            else:
+                self._parser.print_help()
 
