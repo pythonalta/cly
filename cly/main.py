@@ -2,6 +2,38 @@ import sys
 import inspect
 import argparse
 
+class CLIGroup:
+    def __init__(self, name="group", desc=""):
+        self._parent_cmds = {}
+        self._sub_cmds = {}
+        self._help = desc
+        self._prog = name
+        self._signatures = {}
+        self._completions = {}
+
+    def cmd(self, path, help=None, completion=None):
+        parts = path.strip('/').split('/')
+        tuple_path = tuple(parts)
+        if completion is not None:
+            self._completions[tuple_path] = completion
+        if len(parts) == 1:
+            name = parts[0]
+            def decorator(func):
+                self._parent_cmds[name] = func
+                self._sub_cmds.setdefault(name, {})
+                self._signatures[name] = inspect.signature(func)
+                return func
+            return decorator
+        elif len(parts) == 2:
+            parent, sub = parts
+            def decorator(func):
+                self._sub_cmds.setdefault(parent, {})
+                self._sub_cmds[parent][sub] = func
+                return func
+            return decorator
+        else:
+            raise Exception("Max nesting 2 supported")
+
 class CLI:
     def __init__(self, name="cli", desc=""):
         self._parent_cmds = {}
@@ -33,6 +65,37 @@ class CLI:
             return decorator
         else:
             raise Exception("Max nesting 2 supported")
+
+    def include_group(self, group: CLIGroup, prefix: str = ""):
+        prefix = prefix.strip('/')
+        for parent_cmd_name, parent_func in group._parent_cmds.items():
+            new_cmd_name = '/'.join(filter(None, [prefix, parent_cmd_name]))
+            parts = new_cmd_name.split('/')
+            if len(parts) == 1:
+                self._parent_cmds[parts[0]] = parent_func
+                self._sub_cmds.setdefault(parts[0], {})
+                self._signatures[parts[0]] = group._signatures[parent_cmd_name]
+            elif len(parts) == 2:
+                p, s = parts
+                self._sub_cmds.setdefault(p, {})
+                self._sub_cmds[p][s] = parent_func
+            else:
+                raise Exception("Max nesting 2 supported")
+            if (parent_cmd_name,) in group._completions:
+                self._completions[tuple(parts)] = group._completions[(parent_cmd_name,)]
+
+        for parent, subcmds in group._sub_cmds.items():
+            for sub_name, func in subcmds.items():
+                full_cmd_path = '/'.join(filter(None, [prefix, parent, sub_name]))
+                parts = full_cmd_path.split('/')
+                if len(parts) == 2:
+                    main, sub = parts
+                    self._sub_cmds.setdefault(main, {})
+                    self._sub_cmds[main][sub] = func
+                else:
+                    raise Exception("Max nesting 2 supported")
+                if (parent, sub_name) in group._completions:
+                    self._completions[tuple(parts)] = group._completions[(parent, sub_name)]
 
     def exec(self, args=None):
         argv = sys.argv[1:] if args is None else args
@@ -96,8 +159,8 @@ class CLI:
         cmds = sorted(real_roots)
         subcmds_map = {parent: sorted([sub for sub in subs if sub]) for parent, subs in self._sub_cmds.items()}
 
-        opt_map = {}
-        val_map = {}
+        opt_map = {}   # deploy: ['--name', ...]
+        val_map = {}   # deploy: {'name': [choices, ...]}
         for cmdpath, comp in self._completions.items():
             label = "_".join(cmdpath)
             opt_map.setdefault(label, [])
@@ -116,6 +179,7 @@ class CLI:
 
         script = [
             "#!/bin/bash",
+            "# Completion for your CLI",
             *arrays,
             "",
             f'_{self._prog}_completion() {{',
@@ -137,6 +201,7 @@ class CLI:
             script.append(f'    opts["{label}"]="{ " ".join(optlist) }"')
 
         script.extend([
+            # Top level
             '    if [[ $cword -eq 1 ]]; then',
             '        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )',
             '        return 0',
@@ -179,6 +244,7 @@ class CLI:
             '        argname="${prev#--}"',
             '        arrvar="_COMP_${label//[^a-zA-Z0-9_]/_}__${argname}"',
             '        if declare -p $arrvar &>/dev/null; then',
+            '            # eval the array by name, output all elements as words',
             r'            COMPREPLY=( $(compgen -W "$(eval "echo \${${arrvar}[@]}")" -- "$cur") )',
             '            return 0',
             '        fi',
@@ -195,4 +261,4 @@ class CLI:
             '}',
             f'complete -F _{self._prog}_completion {self._prog}'
         ])
-        print('\n'.join(script))
+        print('\n'.join(script)) 
