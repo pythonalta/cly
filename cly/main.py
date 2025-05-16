@@ -10,7 +10,7 @@ class CLIGroup:
         self._prog = name
         self._signatures = {}
         self._completions = {}
-
+  
     def cmd(self, path, help=None, completion=None):
         parts = path.strip('/').split('/')
         tuple_path = tuple(parts)
@@ -33,15 +33,6 @@ class CLIGroup:
             return decorator
         else:
             raise Exception("Max nesting 2 supported")
-
-class CLI:
-    def __init__(self, name="cli", desc=""):
-        self._parent_cmds = {}
-        self._sub_cmds = {}
-        self._help = desc
-        self._prog = name
-        self._signatures = {}
-        self._completions = {}
 
     def include_group(self, group: CLIGroup, prefix: str = ""):
         prefix = prefix.strip('/')
@@ -73,6 +64,15 @@ class CLI:
                     raise Exception("Max nesting 2 supported")
                 if (parent, sub_name) in group._completions:
                     self._completions[tuple(parts)] = group._completions[(parent, sub_name)]
+
+class CLI:
+    def __init__(self, name="cli", desc=""):
+        self._parent_cmds = {}
+        self._sub_cmds = {}
+        self._help = desc
+        self._prog = name
+        self._signatures = {}
+        self._completions = {}
 
     def cmd(self, path, help=None, completion=None):
         parts = path.strip('/').split('/')
