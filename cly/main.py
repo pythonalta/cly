@@ -188,7 +188,6 @@ class CLI:
 
         script = [
             "#!/bin/bash",
-            "# Completion for your CLI",
             *arrays,
             "",
             f'_{self._prog}_completion() {{',
@@ -210,7 +209,6 @@ class CLI:
             script.append(f'    opts["{label}"]="{ " ".join(optlist) }"')
 
         script.extend([
-            # Top level
             '    if [[ $cword -eq 1 ]]; then',
             '        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )',
             '        return 0',
@@ -270,4 +268,4 @@ class CLI:
             '}',
             f'complete -F _{self._prog}_completion {self._prog}'
         ])
-        print('\n'.join(script)) 
+        print('\n'.join(script))
