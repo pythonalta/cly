@@ -159,8 +159,17 @@ class CLI:
         cmds = sorted(real_roots)
         subcmds_map = {parent: sorted([sub for sub in subs if sub]) for parent, subs in self._sub_cmds.items()}
 
-        opt_map = {}   # deploy: ['--name', ...]
-        val_map = {}   # deploy: {'name': [choices, ...]}
+        opt_map = {}
+        val_map = {}
+
+        for cmd, sig in self._signatures.items():
+            label = cmd
+            opt_map.setdefault(label, [])
+            for p in sig.parameters.values():
+                opt = f"--{p.name}"
+                if opt not in opt_map[label]:
+                    opt_map[label].append(opt)
+
         for cmdpath, comp in self._completions.items():
             label = "_".join(cmdpath)
             opt_map.setdefault(label, [])
