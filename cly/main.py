@@ -43,6 +43,37 @@ class CLI:
         self._signatures = {}
         self._completions = {}
 
+    def include_group(self, group: CLIGroup, prefix: str = ""):
+        prefix = prefix.strip('/')
+        for parent_cmd_name, parent_func in group._parent_cmds.items():
+            new_cmd_name = '/'.join(filter(None, [prefix, parent_cmd_name]))
+            parts = new_cmd_name.split('/')
+            if len(parts) == 1:
+                self._parent_cmds[parts[0]] = parent_func
+                self._sub_cmds.setdefault(parts[0], {})
+                self._signatures[parts[0]] = group._signatures[parent_cmd_name]
+            elif len(parts) == 2:
+                p, s = parts
+                self._sub_cmds.setdefault(p, {})
+                self._sub_cmds[p][s] = parent_func
+            else:
+                raise Exception("Max nesting 2 supported")
+            if (parent_cmd_name,) in group._completions:
+                self._completions[tuple(parts)] = group._completions[(parent_cmd_name,)]
+
+        for parent, subcmds in group._sub_cmds.items():
+            for sub_name, func in subcmds.items():
+                full_cmd_path = '/'.join(filter(None, [prefix, parent, sub_name]))
+                parts = full_cmd_path.split('/')
+                if len(parts) == 2:
+                    main, sub = parts
+                    self._sub_cmds.setdefault(main, {})
+                    self._sub_cmds[main][sub] = func
+                else:
+                    raise Exception("Max nesting 2 supported")
+                if (parent, sub_name) in group._completions:
+                    self._completions[tuple(parts)] = group._completions[(parent, sub_name)]
+
     def cmd(self, path, help=None, completion=None):
         parts = path.strip('/').split('/')
         tuple_path = tuple(parts)
