@@ -10,7 +10,7 @@ class CLIGroup:
         self._prog = name
         self._signatures = {}
         self._completions = {}
-  
+
     def cmd(self, path, help=None, completion=None):
         parts = path.strip('/').split('/')
         tuple_path = tuple(parts)
@@ -34,7 +34,7 @@ class CLIGroup:
         else:
             raise Exception("Max nesting 2 supported")
 
-    def include_group(self, group: CLIGroup, prefix: str = ""):
+    def include_group(self, group, prefix: str = ""):
         prefix = prefix.strip('/')
         for parent_cmd_name, parent_func in group._parent_cmds.items():
             new_cmd_name = '/'.join(filter(None, [prefix, parent_cmd_name]))
