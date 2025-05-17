@@ -141,19 +141,21 @@ class CLI:
         params = list(node.signature.parameters.values())
         ap = argparse.ArgumentParser(prog=f"{self.name} {' '.join(path)}", add_help=True)
         for p in params:
-            ap.add_argument(f"--{p.name}", dest="op_" + p.name, required=False)
-            ap.add_argument(p.name, nargs='?', default=None)
+            is_required = (p.default == inspect.Parameter.empty)
+            if is_required:
+                ap.add_argument(p.name)
+            else:
+                ap.add_argument(f"--{p.name}", dest=p.name, default=p.default, required=False)
         ns, _ = ap.parse_known_args(remaining)
         kw = {}
         for p in params:
-            opt_val = getattr(ns, "op_" + p.name)
-            pos_val = getattr(ns, p.name)
-            val = opt_val if opt_val is not None else pos_val
-            if val is None and p.default != inspect.Parameter.empty:
-                val = p.default
-            if val is None:
-                print(f"Missing required argument: {p.name}")
-                sys.exit(1)
+            if p.default == inspect.Parameter.empty:
+                val = getattr(ns, p.name, None)
+                if val is None:
+                    print(f"Missing required argument: {p.name}")
+                    sys.exit(1)
+            else:
+                val = getattr(ns, p.name, p.default)
             kw[p.name] = val
         node.func(**kw)
 
