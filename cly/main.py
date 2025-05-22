@@ -3,7 +3,7 @@ import inspect
 import argparse
 
 class cly:
-    def exit(code):
+    def exit(code=0):
         sys.exist(code)
 
     def error(message):
@@ -13,6 +13,15 @@ class cly:
     def done(message):
         print(f'done: {message}')
         sys.exit(0)
+
+    def exec(action=None, with_message=''):
+        try:
+            action
+            if with_message:
+                cly.done(with_message)
+        except Exception as e:
+            cly.error(e)
+
 
 class CommandNode:
     def __init__(self, name=None, help_desc=""):
