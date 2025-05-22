@@ -1,1 +1,1 @@
-from cly.main import CLI, CLIGroup
+from cly.main import cly, CLI, CLIGroup
