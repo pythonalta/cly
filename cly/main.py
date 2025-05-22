@@ -4,7 +4,7 @@ import argparse
 
 class cly:
     def exit(code=0):
-        sys.exist(code)
+        sys.exit(code)
 
     def error(message):
         print(f'error: {message}')
