@@ -2,6 +2,18 @@ import sys
 import inspect
 import argparse
 
+class cly:
+    def exit(code):
+        sys.exist(code)
+
+    def error(message):
+        print(f'error: {message}')
+        sys.exit(1)
+
+    def done(message):
+        print(f'done: {message}')
+        sys.exit(0)
+
 class CommandNode:
     def __init__(self, name=None, help_desc=""):
         self.name = name
