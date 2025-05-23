@@ -24,8 +24,9 @@ class cly:
 
 
 class CommandNode:
-    def __init__(self, name=None, help_desc=""):
+    def __init__(self, name=None, aliases=None, help_desc=""):
         self.name = name
+        self.aliases = aliases if aliases is not None else []
         self.help = help_desc
         self.func = None
         self.signature = None
@@ -34,10 +35,12 @@ class CommandNode:
 
     def add_child(self, child):
         self.children[child.name] = child
+        for alias in child.aliases:
+            self.children[alias] = child
 
-    def get_or_create_child(self, name):
+    def get_or_create_child(self, name, aliases=None):
         if name not in self.children:
-            self.children[name] = CommandNode(name)
+            self.children[name] = CommandNode(name, aliases)
         return self.children[name]
 
     def find_node(self, argv):
@@ -58,84 +61,130 @@ class CommandNode:
         out = []
         if self.func is not None:
             out.append((prefix, self))
-        for c in self.children.values():
-            out.extend(c.collect_recursive(prefix + (c.name,)))
+        processed_children = set()
+        for name, child in self.children.items():
+            if child not in processed_children:
+                out.extend(child.collect_recursive(prefix + (child.name if child.name else name,)))
+                processed_children.add(child)
         return out
 
     def collect_structure(self, prefix=()):
         out = []
-        children_keys = list(self.children.keys())
-        out.append((prefix, self, children_keys))
-        for c in self.children.values():
-            out.extend(c.collect_structure(prefix + (c.name,)))
+        processed_children = set()
+        children_keys = []
+        for name, child in self.children.items():
+            if child not in processed_children:
+                children_keys.append(child.name)
+                processed_children.add(child)
+        out.append((prefix, self, sorted(children_keys)))
+        processed_children = set()
+        for name, child in self.children.items():
+            if child not in processed_children:
+                out.extend(child.collect_structure(prefix + (child.name if child.name else name,)))
+                processed_children.add(child)
         return out
 
+
 class CLIGroup:
-    def __init__(self, name='group', desc=""):
-        self.root = CommandNode(name, desc)
+    def __init__(self, name='group', desc="", aliases=None, prefix=None):
         self.name = name
         self.desc = desc
+        self.aliases = aliases if aliases is not None else []
+        if isinstance(prefix, list):
+            self.prefix = prefix
+        elif isinstance(prefix, str):
+            self.prefix = [prefix] if prefix else []
+        else:
+            self.prefix = []
+        self.root = CommandNode(name, self.aliases if not self.prefix else self.prefix, desc)
 
-    def cmd(self, path, help=None, completion=None):
+    def cmd(self, path, help=None, completion=None, aliases=None):
         parts = path.strip('/').split('/')
         def decorator(func):
             node = self.root
-            for part in parts:
+            for part in parts[:-1]:
                 node = node.get_or_create_child(part)
-            node.func = func
-            node.help = help or ""
-            node.completion = completion or {}
-            node.signature = inspect.signature(func)
+            node.add_child(CommandNode(parts[-1], aliases, help or ""))
+            cmd_node = node.children[parts[-1]]
+            cmd_node.func = func
+            cmd_node.completion = completion or {}
+            cmd_node.signature = inspect.signature(func)
             return func
         return decorator
 
     def include_group(self, group, prefix=""):
-        prefix_parts = [p for p in prefix.strip('/').split('/') if p]
-        node = self.root
-        for part in prefix_parts:
-            node = node.get_or_create_child(part)
         def copy_subtree(from_node, to_node):
             if from_node.func is not None:
                 to_node.func = from_node.func
                 to_node.help = from_node.help
                 to_node.completion = from_node.completion
                 to_node.signature = from_node.signature
+            processed_children = set()
             for cname, child in from_node.children.items():
-                copy_subtree(child, to_node.get_or_create_child(cname))
-        copy_subtree(group.root, node)
+                if child not in processed_children:
+                    new_child_node = to_node.get_or_create_child(child.name, child.aliases)
+                    copy_subtree(child, new_child_node)
+                    processed_children.add(child)
+
+        if isinstance(prefix, str):
+            prefix_parts = [p for p in prefix.strip('/').split('/') if p]
+            node = self.root
+            for part in prefix_parts:
+                node = node.get_or_create_child(part)
+            copy_subtree(group.root, node)
+        elif isinstance(prefix, list):
+            for pref in prefix:
+                prefix_parts = [p for p in pref.strip('/').split('/') if p]
+                node = self.root
+                for part in prefix_parts:
+                    node = node.get_or_create_child(part)
+                copy_subtree(group.root, node)
 
 class CLI:
     def __init__(self, name='cli', desc=""):
-        self.root = CommandNode(name, desc)
+        self.root = CommandNode(name, help_desc=desc)
         self.name = name
         self.desc = desc
 
-    def cmd(self, path, help=None, completion=None):
+    def cmd(self, path, help=None, completion=None, aliases=None):
         parts = path.strip('/').split('/')
         def decorator(func):
             node = self.root
-            for part in parts:
+            for part in parts[:-1]:
                 node = node.get_or_create_child(part)
-            node.func = func
-            node.help = help or ""
-            node.completion = completion or {}
-            node.signature = inspect.signature(func)
+            node.add_child(CommandNode(parts[-1], aliases, help or ""))
+            cmd_node = node.children[parts[-1]]
+            cmd_node.func = func
+            cmd_node.completion = completion or {}
+            cmd_node.signature = inspect.signature(func)
             return func
         return decorator
 
-    def include_group(self, group, prefix=""):
-        prefix_parts = [p for p in prefix.strip('/').split('/') if p]
+    def include_group(self, group, prefix=None):
+        if isinstance(prefix, list):
+            prefix_parts = [p for p_list in prefix for p in p_list.strip('/').split('/') if p] if prefix else []
+        elif isinstance(prefix, str):
+            prefix_parts = [p for p in prefix.strip('/').split('/') if p] if prefix else []
+        else:
+            prefix_parts = []
+
         node = self.root
         for part in prefix_parts:
-            node = node.get_or_create_child(part)
+             node = node.get_or_create_child(part)
+
         def copy_subtree(from_node, to_node):
             if from_node.func is not None:
                 to_node.func = from_node.func
                 to_node.help = from_node.help
                 to_node.completion = from_node.completion
                 to_node.signature = from_node.signature
+            processed_children = set()
             for cname, child in from_node.children.items():
-                copy_subtree(child, to_node.get_or_create_child(cname))
+                if child not in processed_children:
+                    new_child_node = to_node.get_or_create_child(child.name, child.aliases)
+                    copy_subtree(child, new_child_node)
+                    processed_children.add(child)
+
         copy_subtree(group.root, node)
 
     def find_node(self, argv):
@@ -151,9 +200,15 @@ class CLI:
             sys.exit(1)
         node, path, remaining = self.find_node(argv)
         if node.func is None:
-            if node.children:
+            processed_children = set()
+            children_keys = []
+            for name, child in node.children.items():
+                if child not in processed_children:
+                    children_keys.append(child.name)
+                    processed_children.add(child)
+            if children_keys:
                 print(f"Usage: {self.name} {' '.join(path)} <subcommand> [options]")
-                print("Subcommands:", ' '.join(node.children.keys()))
+                print("Subcommands:", ' '.join(sorted(children_keys)))
                 sys.exit(1)
             else:
                 print(f"Unknown command: {' '.join(argv)}")
@@ -197,19 +252,22 @@ class CLI:
     def print_completion(self):
         nodes = {}
         for prefix, node in self.root.collect_recursive():
-            label = "_".join(prefix)
+            label = "_".join(prefix).replace('-', '_')
             nodes[label] = (prefix, node)
+
         all_cmds = set()
         subcmds_map = {}
         opt_map = {}
         val_map = {}
+
         for prefix, node, children in self.root.collect_structure():
             if len(prefix) == 0:
                 all_cmds.update(children)
             else:
-                pfx = "_".join(prefix)
+                pfx = "_".join(prefix).replace('-', '_')
                 if children:
-                    subcmds_map[pfx] = children
+                    subcmds_map[pfx] = sorted(children)
+
         for label, (prefix, node) in nodes.items():
             opt_map.setdefault(label, [])
             if node.signature is not None:
@@ -223,12 +281,14 @@ class CLI:
                     if f"--{arg}" not in opt_map[label]:
                         opt_map[label].append(f"--{arg}")
                     val_map[label][arg] = vals
+
         arrays = []
         for label, argvals in val_map.items():
             for arg, vals in argvals.items():
                 basharr = f"_COMP_{label}__{arg}"
                 valstr = " ".join([f'"{v}"' for v in vals])
                 arrays.append(f'{basharr}=({valstr})')
+
         script = [
             "#!/bin/bash",
             *arrays,
@@ -255,6 +315,7 @@ class CLI:
             for arg, vals_ in argvals.items():
                 basharr = f'_COMP_{label}__{arg}'
                 script.append(f'    vals["{label}__{arg}"]="{ " ".join(vals_) }"')
+
         script.extend([
             '',
             '    find_cmd_label() {',
@@ -269,10 +330,11 @@ class CLI:
             '            else',
             '                curr_label="${curr_label}_$arg"',
             '            fi',
-            '            if [[ -n "${subcmds[$curr_label]}" ]]; then',
-            '                last_label="$curr_label"',
+            '            local normalized_curr_label="${curr_label//-/_}"',
+            '            if [[ -n "${subcmds[$normalized_curr_label]}" ]]; then',
+            '                last_label="$normalized_curr_label"',
             '            else',
-            '                last_label="$curr_label"',
+            '                last_label="$normalized_curr_label"',
             '                break',
             '            fi',
             '            ((idx++))',
@@ -287,13 +349,11 @@ class CLI:
             '',
             '    read sub_label argstart <<<"$(find_cmd_label)"',
             '',
-            '    # Enforce fallback label if nothing found',
             '    if [[ -z "$sub_label" ]]; then',
-            '        sub_label="${words[1]}"',
+            '        sub_label="${words[1]//-/_}"',
             '        argstart=2',
             '    fi',
             '',
-            '    # Collect which options are already set',
             '    already_set_opts=()',
             '    idx=$argstart',
             '    while ((idx < cword)); do',
@@ -303,7 +363,6 @@ class CLI:
             '            argn="${argn#--}"',
             '            already_set_opts+=("$argn")',
             '            if [[ "$word" != *=* ]]; then',
-            '                # Value for option follows as next arg, unless it is another --opt',
             '                if ((idx + 1 < cword)); then',
             '                    nextw="${words[idx+1]}"',
             '                    if [[ ! "$nextw" == --* ]]; then',
@@ -315,7 +374,6 @@ class CLI:
             '        ((idx++))',
             '    done',
             '',
-            '    # remove already set options from suggestions',
             '    remaining_opts=()',
             '    for opt in ${opts[$sub_label]}; do',
             '        o="${opt#--}"',
@@ -326,9 +384,7 @@ class CLI:
             '        [[ $skip -eq 0 ]] && remaining_opts+=("$opt")',
             '    done',
             '',
-            '    # Suggest subcommands, unless one is already present at that position',
             '    if [[ -n "${subcmds[$sub_label]}" && $cword -eq $argstart ]]; then',
-            '        # only suggest subcommand if not already one of the words',
             '        present=0',
             '        for sub in ${subcmds[$sub_label]}; do',
             '            if [[ "${words[argstart]}" == "$sub" ]]; then',
@@ -341,7 +397,6 @@ class CLI:
             '        fi',
             '    fi',
             '',
-            '    # Suggest possible values for --option',
             '    if [[ "$prev" == --* ]]; then',
             '        argname="${prev#--}"',
             '        if [[ -n "${vals[${sub_label}__${argname}]}" ]]; then',
@@ -350,7 +405,6 @@ class CLI:
             '        fi',
             '    fi',
             '',
-            '    # Suggest possible values for --option=',
             '    if [[ "$cur" == --*=* ]]; then',
             '        argname="${cur%%=*}"',
             '        argname="${argname#--}"',
@@ -361,14 +415,11 @@ class CLI:
             '        fi',
             '    fi',
             '',
-            '    # After a value, suggest the remaining options',
-            '    # If previous was a value for an option, check which option it was',
             '    if ((cword>=2)); then',
             '        prev2="${COMP_WORDS[COMP_CWORD-2]}"',
             '        if [[ "$prev2" == --* ]]; then',
             '            argname="${prev2#--}"',
             '            if [[ -n "${vals[${sub_label}__${argname}]}" ]]; then',
-            '                # Only suggest remaining not-set options',
             '                if ((${#remaining_opts[@]})); then',
             '                    COMPREPLY=( $(compgen -W "${remaining_opts[*]}" -- "$cur") )',
             '                    return 0',
@@ -377,13 +428,11 @@ class CLI:
             '        fi',
             '    fi',
             '',
-            '    # If at a leaf (no subcmds), suggest options not yet given',
             '    if [[ -z "${subcmds[$sub_label]}" && ${#remaining_opts[@]} -gt 0 ]]; then',
             '        COMPREPLY=( $(compgen -W "${remaining_opts[*]}" -- "$cur") )',
             '        return 0',
             '    fi',
             '',
-            '    # Default: always able to complete options for this command node',
             '    if [[ ${#remaining_opts[@]} -gt 0 ]]; then',
             '        COMPREPLY+=( $(compgen -W "${remaining_opts[*]}" -- "$cur") )',
             '    fi',
