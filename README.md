@@ -13,10 +13,10 @@ pip install git+https://github.com/pythonalta/cly
 With [py](https://github.com/ximenesyuri/py):
 
 ```
-py install pythonalta/cly --from github 
+py install pythonalta/cly
 ```
 
-# Usage
+# Basic Usage
 
 In `cly` you create a CLI as you create an app in `fastAPI`:
 
@@ -69,24 +69,67 @@ The above will provide:
 python cli.py my_command subcommand argA_value argB_value ...
 ```
 
-Furthermore, you can organize commands in groups as, in `fastAPI`, you organize endpoints in routers:
-
+Furthermore, you can organize commands into groups as in `fastAPI` you can organize endpoints into routers:
+        
 ```python
-# in groups/group1.py
+# in groups/group.py
 from cly import CLIGroup
 
-cli_group1 = CLIGroup(name='cli_group1', desc='First group of commands')
+cli_group = CLIGroup(
+    name='cli_group',
+    desc='Some group of commands'
+)
 
-@cli_group1.cmd('/command', help="some help message")
+@cli_group.cmd('/command', help="some help message")
 def group_command_callback(arg1, arg2, ...):
     ...
 
 # in cli.py
 from cly import CLI
-from groups.group1 import cli_group1
+from groups.group import cli_group
 
 cli = CLI(name="my_cli", desc="Some description")
-cli.include_group(cli_group1, preffix='group1')
+cli.include_group(cli_group, preffix='/group')
+```
+
+# Aliases
+
+You can set command and prefixes aliases:
+
+```python
+from cly import CLI
+from groups.group import cli_group
+
+# command with aliases
+cli = CLI(name="my_cli", desc="Some description")
+@cli.cmd('/command', aliases=['/cmd', '/c'])
+
+# group with prefix aliases 
+cli.include_group(cli_group, prefix=['/group', '/g'])
+```
+
+With the above all the following will equally work:
+
+```bash
+python cly.py group command
+python cly.py group cmd
+python cly.py group c
+python cly.py g command
+python cly.py g cmd
+python cly.py g c
+```
+
+# Options
+           
+Given the implementation of aliases, options with short and long presentations (as in [POSIX standards](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html) ) can be included as commands with aliases:
+
+```python
+from cly import CLI
+from groups.group import cli_group
+
+# command with aliases
+cli = CLI(name="my_cli", desc="Some description")
+@cli.cmd('/-o', aliases=['/--option'])
 ```
 
 # Completion
